@@ -1,22 +1,38 @@
-import React from 'react'
-import { redirect } from 'next/navigation'
-import clientPromise from "@/app/lib/mongodb";
-// import { useParams } from 'next/navigation'
+import { NextResponse } from "next/server";
+import pool from "@/app/lib/postgres";
+import redis from "@/app/lib/redis";
 
-async function page({params}) {
-    // const params=useParams()
-  const client = await clientPromise
-    const db = client.db('shorturl')
-    const res= await params
-    const shorturl=res.slug
+export async function GET(req, { params }) {
+  const shortCode = params.slug;
+  const cacheKey = `short:${shortCode}`;
 
+  try {
+    // 1. Redis
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return NextResponse.redirect(cached);
+    }
 
-    const data =await db.collection('urlcollec').findOne({shorturl:shorturl})
-    console.log(shorturl,data)
-    
-      if(data) redirect(`${data.url}`)
-        else 
-    return <></>
+    // 2. DB
+    const result = await pool.query(
+      `SELECT original_url FROM urls WHERE short_code = $1`,
+      [shortCode]
+    );
+
+    if (result.rows.length === 0) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const originalUrl = result.rows[0].original_url;
+
+    // 3. Cache
+    await redis.set(cacheKey, originalUrl, "EX", 3600);
+
+    // 4. Redirect
+    return NextResponse.redirect(originalUrl);
+
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
 }
-
-export default page
